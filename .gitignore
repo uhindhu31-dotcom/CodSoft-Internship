@@ -1,0 +1,12 @@
+# Environment variables and secrets
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+
+# Local databases
+**/dev.db
+**/dev.db-journal
+
+# Dependencies
+**/node_modules/

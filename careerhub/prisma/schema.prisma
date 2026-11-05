@@ -1,0 +1,255 @@
+generator client {
+  provider = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String             @id
+  name            String
+  email           String             @unique
+  emailVerified   Boolean            @default(false)
+  image           String?
+  role            String             @default("candidate")
+  status          String             @default("active")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  sessions        Session[]
+  accounts        Account[]
+  candidateProfile CandidateProfile?
+  company         Company?
+  resumes         Resume[]
+  applications    JobApplication[]
+  savedJobs       SavedJob[]
+  notifications   Notification[]
+  reports         UserReport[]       @relation("Reporter")
+  reportedBy      UserReport[]       @relation("ReportedUser")
+  jobReports      JobReport[]
+
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model CandidateProfile {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  headline       String?
+  location       String?
+  bio            String?
+  skills         String[] @default([])
+  aiAnalysis     Json?
+  aiAnalyzedAt   DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("candidate_profile")
+}
+
+model Resume {
+  id           String   @id @default(cuid())
+  userId       String
+  fileName     String
+  mimeType     String
+  fileSize     Int
+  content      Bytes
+  extractedText String?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications  JobApplication[]
+
+  @@index([userId, createdAt])
+  @@map("resume")
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  recruiterId String   @unique
+  name        String
+  website     String?
+  description String?
+  location    String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  recruiter   User     @relation(fields: [recruiterId], references: [id], onDelete: Cascade)
+  jobs        Job[]
+
+  @@map("company")
+}
+
+model Job {
+  id              String           @id @default(cuid())
+  companyId       String
+  title           String
+  description     String
+  location        String
+  workplace       String           @default("On-site")
+  category        String
+  experience      String?
+  salaryMin       Int?
+  salaryMax       Int?
+  skills          String[]         @default([])
+  employmentType  String           @default("Full-time")
+  status          String           @default("pending")
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  company         Company          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  applications    JobApplication[]
+  savedBy         SavedJob[]
+  reports         JobReport[]
+
+  @@index([status, category, workplace])
+  @@index([location])
+  @@index([salaryMin, salaryMax])
+  @@map("job")
+}
+
+model JobApplication {
+  id          String      @id @default(cuid())
+  jobId       String
+  candidateId String
+  resumeId    String?
+  coverLetter String?
+  status      String      @default("applied")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  job         Job         @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate   User        @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  resume      Resume?     @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  interview   Interview?
+  statusHistory ApplicationStatusEvent[]
+
+  @@unique([jobId, candidateId])
+  @@index([candidateId, createdAt])
+  @@index([jobId, status])
+  @@map("job_application")
+}
+
+model ApplicationStatusEvent {
+  id            String          @id @default(cuid())
+  applicationId String
+  status        String
+  note          String?
+  createdAt     DateTime        @default(now())
+  application   JobApplication  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+  @@map("application_status_event")
+}
+
+model SavedJob {
+  userId    String
+  jobId     String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@id([userId, jobId])
+  @@index([userId, createdAt])
+  @@map("saved_job")
+}
+
+model Interview {
+  id            String          @id @default(cuid())
+  applicationId String          @unique
+  scheduledAt   DateTime
+  meetingUrl    String?
+  notes         String?
+  status        String          @default("scheduled")
+  createdAt     DateTime        @default(now())
+  application   JobApplication  @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@map("interview")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notification")
+}
+
+model JobReport {
+  id          String   @id @default(cuid())
+  jobId       String
+  reporterId  String
+  reason      String
+  resolvedAt  DateTime?
+  createdAt   DateTime @default(now())
+  job         Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reporter    User     @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([resolvedAt, createdAt])
+  @@map("job_report")
+}
+
+model UserReport {
+  id             String   @id @default(cuid())
+  reporterId     String
+  reportedUserId String
+  reason         String
+  resolvedAt     DateTime?
+  createdAt      DateTime @default(now())
+  reporter       User     @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User     @relation("ReportedUser", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([resolvedAt, createdAt])
+  @@map("user_report")
+}
