@@ -1,62 +1,83 @@
-import { Prisma } from "@prisma/client-announcement";
-import { announcementPrisma as prisma } from "@/lib/announcement-prisma";
-import { isAnnouncementExpired, validateAnnouncement } from "@/lib/announcement-validation";
 
-function presentAnnouncement<T extends { expiresAt: Date | null }>(announcement: T) {
-  return { ...announcement, status: isAnnouncementExpired(announcement.expiresAt) ? "EXPIRED" : "ACTIVE" };
-}
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
-export async function GET(request: Request) {
-  const searchParams = new URL(request.url).searchParams;
-  const search = searchParams.get("search")?.trim();
-  const category = searchParams.get("category") || undefined;
-  const priority = searchParams.get("priority") || undefined;
-
+export async function GET() {
   try {
     const announcements = await prisma.announcement.findMany({
-      where: {
-        category,
-        priority,
-        ...(search
-          ? {
-              OR: [
-                { title: { contains: search } },
-                { description: { contains: search } },
-                { category: { contains: search } },
-              ],
-            }
-          : {}),
+      include: {
+        createdBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+          },
+        },
       },
-      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+      orderBy: {
+        createdAt: "desc",
+      },
     });
-    return Response.json(announcements.map(presentAnnouncement));
+
+    return NextResponse.json(announcements);
   } catch (error) {
-    console.error("Failed to load announcements:", error);
-    return Response.json({ error: "Could not load announcements." }, { status: 500 });
+    console.error("Failed to fetch announcements:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch announcements." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
-    console.error("Failed to read announcement request:", error);
-    return Response.json({ error: "Could not read announcement details." }, { status: 400 });
-  }
+    const body = await request.json();
+    const { title, message, createdById } = body;
 
-  const validation = validateAnnouncement(body);
-  if (!validation.success) return Response.json({ error: validation.message }, { status: 400 });
-
-  try {
-    const announcement = await prisma.announcement.create({ data: validation.data });
-    return Response.json(presentAnnouncement(announcement), { status: 201 });
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return Response.json({ error: "An announcement with these unique details already exists." }, { status: 409 });
+    if (
+      typeof title !== "string" ||
+      !title.trim() ||
+      typeof message !== "string" ||
+      !message.trim() ||
+      (createdById !== undefined &&
+        createdById !== null &&
+        (!Number.isInteger(createdById) || createdById < 1))
+    ) {
+      return NextResponse.json(
+        { message: "Please provide a valid title and message." },
+        { status: 400 }
+      );
     }
+
+    const announcement = await prisma.announcement.create({
+      data: {
+        title: title.trim(),
+        message: message.trim(),
+        ...(createdById != null ? { createdById } : {}),
+      },
+    });
+
+    return NextResponse.json(announcement, { status: 201 });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2003"
+    ) {
+      return NextResponse.json(
+        { message: "The selected creator does not exist." },
+        { status: 400 }
+      );
+    }
+
     console.error("Failed to create announcement:", error);
-    return Response.json({ error: "Could not create announcement." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to create announcement." },
+      { status: 500 }
+    );
   }
 }

@@ -1,115 +1,174 @@
-import { timetablePrisma as prisma } from "@/lib/timetable-prisma";
-import { TimetableRequestError } from "@/lib/timetable-errors";
-import { validateTimetableEntry } from "@/lib/timetable-validation";
 
-const entryInclude = {
-  class: true,
-  subject: { select: { id: true, name: true, code: true } },
-  teacher: { select: { id: true, name: true, email: true } },
-} as const;
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+const validDays = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+function validTime(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
+  );
+}
 
 export async function GET(request: Request) {
-  const searchParams = new URL(request.url).searchParams;
-  const classId = searchParams.get("classId") || undefined;
-  const subjectId = searchParams.get("subjectId") || undefined;
-  const teacherId = searchParams.get("teacherId") || undefined;
-  const dayOfWeek = searchParams.get("dayOfWeek") || undefined;
-  const search = searchParams.get("search")?.trim();
-
   try {
-    const entries = await prisma.timetableEntry.findMany({
-      where: {
-        classId,
-        subjectId,
-        teacherId,
-        dayOfWeek,
-        ...(search
-          ? {
-              OR: [
-                { roomNumber: { contains: search } },
-                { academicYear: { contains: search } },
-                { class: { name: { contains: search } } },
-                { class: { section: { contains: search } } },
-                { subject: { name: { contains: search } } },
-                { subject: { code: { contains: search } } },
-                { teacher: { name: { contains: search } } },
-              ],
-            }
-          : {}),
+    const { searchParams } = new URL(request.url);
+    const departmentIdParam = searchParams.get("departmentId");
+    const yearParam = searchParams.get("year");
+    const day = searchParams.get("day");
+
+    const where: {
+      departmentId?: number;
+      year?: number;
+      dayOfWeek?: string;
+    } = {};
+
+    if (departmentIdParam !== null) {
+      const departmentId = Number(departmentIdParam);
+
+      if (!Number.isInteger(departmentId) || departmentId < 1) {
+        return NextResponse.json(
+          { message: "Invalid department ID." },
+          { status: 400 }
+        );
+      }
+
+      where.departmentId = departmentId;
+    }
+
+    if (yearParam !== null) {
+      const year = Number(yearParam);
+
+      if (!Number.isInteger(year) || year < 1 || year > 6) {
+        return NextResponse.json(
+          { message: "Invalid academic year." },
+          { status: 400 }
+        );
+      }
+
+      where.year = year;
+    }
+
+    if (day !== null) {
+      const matchingDay = validDays.find(
+        (validDay) => validDay.toLowerCase() === day.toLowerCase()
+      );
+
+      if (!matchingDay) {
+        return NextResponse.json(
+          { message: "Invalid day of the week." },
+          { status: 400 }
+        );
+      }
+
+      where.dayOfWeek = matchingDay;
+    }
+
+    const entries = await prisma.timetable.findMany({
+      where,
+      include: {
+        department: true,
+        subject: true,
+        teacher: true,
       },
-      include: entryInclude,
-      orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }],
+      orderBy: [
+        { dayOfWeek: "asc" },
+        { startTime: "asc" },
+      ],
     });
-    return Response.json(entries);
+
+    return NextResponse.json(entries);
   } catch (error) {
-    console.error("Failed to load timetable:", error);
-    return Response.json({ error: "Could not load timetable entries." }, { status: 500 });
+    console.error("Failed to fetch timetable:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch timetable." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    const body = await request.json();
+    const {
+      departmentId,
+      subjectId,
+      teacherId,
+      year,
+      dayOfWeek,
+      startTime,
+      endTime,
+    } = body;
+
+    const matchingDay =
+      typeof dayOfWeek === "string"
+        ? validDays.find(
+            (day) => day.toLowerCase() === dayOfWeek.toLowerCase()
+          )
+        : undefined;
+
+    if (
+      !Number.isInteger(departmentId) ||
+      departmentId < 1 ||
+      !Number.isInteger(subjectId) ||
+      subjectId < 1 ||
+      (teacherId !== undefined &&
+        teacherId !== null &&
+        (!Number.isInteger(teacherId) || teacherId < 1)) ||
+      !Number.isInteger(year) ||
+      year < 1 ||
+      year > 6 ||
+      !matchingDay ||
+      !validTime(startTime) ||
+      !validTime(endTime) ||
+      startTime >= endTime
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid timetable details and times." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to read timetable request:", error);
-    return Response.json({ error: "Could not read timetable details." }, { status: 400 });
-  }
 
-  const validation = validateTimetableEntry(body);
-  if (!validation.success) return Response.json({ error: validation.message }, { status: 400 });
-
-  try {
-    const entry = await prisma.$transaction(async (transaction) => {
-      const [classSubject, subjectTeacher] = await Promise.all([
-        transaction.classSubject.findUnique({
-          where: {
-            classId_subjectId: {
-              classId: validation.data.classId,
-              subjectId: validation.data.subjectId,
-            },
-          },
-        }),
-        transaction.subjectTeacher.findUnique({
-          where: {
-            teacherId_subjectId: {
-              teacherId: validation.data.teacherId,
-              subjectId: validation.data.subjectId,
-            },
-          },
-        }),
-      ]);
-      if (!classSubject || !subjectTeacher) {
-        throw new TimetableRequestError("The selected subject must be assigned to the class and teacher.", 400);
-      }
-
-      const conflict = await transaction.timetableEntry.findFirst({
-        where: {
-          dayOfWeek: validation.data.dayOfWeek,
-          startTime: { lt: validation.data.endTime },
-          endTime: { gt: validation.data.startTime },
-          OR: [{ classId: validation.data.classId }, { teacherId: validation.data.teacherId }],
-        },
-        select: { id: true },
-      });
-      if (conflict) {
-        throw new TimetableRequestError("This time overlaps an existing class or teacher schedule.", 409);
-      }
-
-      return transaction.timetableEntry.create({
-        data: validation.data,
-        include: entryInclude,
-      });
+    const entry = await prisma.timetable.create({
+      data: {
+        departmentId,
+        subjectId,
+        ...(teacherId != null ? { teacherId } : {}),
+        year,
+        dayOfWeek: matchingDay,
+        startTime,
+        endTime,
+      },
     });
-    return Response.json(entry, { status: 201 });
+
+    return NextResponse.json(entry, { status: 201 });
   } catch (error) {
-    if (error instanceof TimetableRequestError) {
-      return Response.json({ error: error.message }, { status: error.status });
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2003"
+    ) {
+      return NextResponse.json(
+        { message: "The selected department, subject, or teacher does not exist." },
+        { status: 400 }
+      );
     }
+
     console.error("Failed to create timetable entry:", error);
-    return Response.json({ error: "Could not create timetable entry." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to create timetable entry." },
+      { status: 500 }
+    );
   }
 }

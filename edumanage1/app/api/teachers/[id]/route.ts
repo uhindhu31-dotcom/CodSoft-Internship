@@ -1,91 +1,190 @@
-import { Prisma } from "@prisma/client-report";
-import { reportPrisma as prisma } from "@/lib/report-prisma";
-import { timetablePrisma } from "@/lib/timetable-prisma";
-import { validateTeacher } from "@/lib/validation";
 
-type RouteContext = { params: Promise<{ id: string }> };
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
-export async function GET(_request: Request, context: RouteContext) {
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
+
+function getErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+
+  return undefined;
+}
+
+async function readId(context: RouteContext) {
+  const { id } = await context.params;
+  const teacherId = Number(id);
+
+  return Number.isInteger(teacherId) && teacherId > 0
+    ? teacherId
+    : null;
+}
+
+export async function GET(
+  _request: Request,
+  context: RouteContext
+) {
   try {
-    const { id } = await context.params;
-    const teacher = await prisma.teacher.findUnique({ where: { id }, include: { department: true } });
-    if (!teacher) return Response.json({ error: "Teacher not found." }, { status: 404 });
-    return Response.json(teacher);
+    const id = await readId(context);
+
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid teacher ID." },
+        { status: 400 }
+      );
+    }
+
+    const teacher = await prisma.teacher.findUnique({
+      where: { id },
+      include: {
+        department: true,
+        subjects: true,
+        timetable: true,
+      },
+    });
+
+    if (!teacher) {
+      return NextResponse.json(
+        { message: "Teacher not found." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(teacher);
   } catch (error) {
-    console.error("Failed to load teacher:", error);
-    return Response.json({ error: "Could not load teacher." }, { status: 500 });
+    console.error("Failed to fetch teacher:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch teacher." },
+      { status: 500 }
+    );
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
-  let body: unknown;
+export async function PUT(
+  request: Request,
+  context: RouteContext
+) {
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    const id = await readId(context);
+
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid teacher ID." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to read teacher request:", error);
-    return Response.json({ error: "Could not read teacher details." }, { status: 400 });
-  }
 
-  const result = validateTeacher(body);
-  if (!result.success) {
-    return Response.json({ error: result.message }, { status: 400 });
-  }
+    const body = await request.json();
+    const { name, email, employeeId, departmentId } = body;
 
-  try {
-    const { id } = await context.params;
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof employeeId !== "string" ||
+      !employeeId.trim() ||
+      (departmentId !== undefined &&
+        departmentId !== null &&
+        (!Number.isInteger(departmentId) || departmentId < 1))
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid teacher details." },
+        { status: 400 }
+      );
+    }
+
     const teacher = await prisma.teacher.update({
       where: { id },
-      data: result.data,
-      include: { department: true },
+      data: {
+        name: name.trim(),
+        email: email.trim(),
+        employeeId: employeeId.trim(),
+        ...(departmentId !== undefined
+          ? { departmentId }
+          : {}),
+      },
     });
-    return Response.json(teacher);
+
+    return NextResponse.json(teacher);
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2002") {
-        return Response.json({ error: "A teacher with that email address already exists." }, { status: 409 });
-      }
-      if (error.code === "P2025") {
-        return Response.json({ error: "Teacher not found." }, { status: 404 });
-      }
-      if (error.code === "P2003") {
-        return Response.json({ error: "Choose an existing department." }, { status: 400 });
-      }
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Teacher not found." },
+        { status: 404 }
+      );
     }
+
+    if (code === "P2002") {
+      return NextResponse.json(
+        { message: "Email or employee ID already exists." },
+        { status: 409 }
+      );
+    }
+
+    if (code === "P2003") {
+      return NextResponse.json(
+        { message: "The selected department does not exist." },
+        { status: 400 }
+      );
+    }
+
     console.error("Failed to update teacher:", error);
-    return Response.json({ error: "Could not update teacher." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to update teacher." },
+      { status: 500 }
+    );
   }
 }
 
-export async function DELETE(_request: Request, context: RouteContext) {
+export async function DELETE(
+  _request: Request,
+  context: RouteContext
+) {
   try {
-    const { id } = await context.params;
-    const timetableEntries = await timetablePrisma.timetableEntry.count({ where: { teacherId: id } });
-    if (timetableEntries) {
-      return Response.json({ error: "Remove this teacher's timetable entries before deleting them." }, { status: 409 });
-    }
-    const assignedSubjects = await prisma.subjectTeacher.count({ where: { teacherId: id } });
-    if (assignedSubjects) {
-      return Response.json(
-        { error: "Remove this teacher from assigned subjects and timetable entries before deleting them." },
-        { status: 409 },
+    const id = await readId(context);
+
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid teacher ID." },
+        { status: 400 }
       );
     }
-    await prisma.teacher.delete({ where: { id } });
-    return Response.json({ success: true });
+
+    await prisma.teacher.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({
+      message: "Teacher deleted successfully.",
+    });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return Response.json({ error: "Teacher not found." }, { status: 404 });
-    }
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
-      return Response.json(
-        { error: "Remove this teacher from assigned subjects and timetable entries before deleting them." },
-        { status: 409 },
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Teacher not found." },
+        { status: 404 }
       );
     }
+
     console.error("Failed to delete teacher:", error);
-    return Response.json({ error: "Could not delete teacher." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to delete teacher." },
+      { status: 500 }
+    );
   }
 }

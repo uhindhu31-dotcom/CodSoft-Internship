@@ -1,95 +1,141 @@
-import { Prisma } from "@prisma/client-fee";
-import { feePrisma as prisma } from "@/lib/fee-prisma";
-import { validateFeeRecord } from "@/lib/fee-validation";
 
-type FeeStatus = "PAID" | "PARTIALLY_PAID" | "PENDING";
-
-function getStatus(paid: number, total: number): FeeStatus {
-  if (paid >= total) return "PAID";
-  return paid > 0 ? "PARTIALLY_PAID" : "PENDING";
-}
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const search = searchParams.get("search")?.trim();
-    const requestedStatus = searchParams.get("status");
-    if (requestedStatus && !["PAID", "PARTIALLY_PAID", "PENDING"].includes(requestedStatus)) {
-      return Response.json({ error: "Fee status filter is invalid." }, { status: 400 });
+    const studentIdParam = searchParams.get("studentId");
+
+    const where: { studentId?: number } = {};
+
+    if (studentIdParam !== null) {
+      const studentId = Number(studentIdParam);
+
+      if (!Number.isInteger(studentId) || studentId < 1) {
+        return NextResponse.json(
+          { message: "Invalid student ID." },
+          { status: 400 }
+        );
+      }
+
+      where.studentId = studentId;
     }
 
-    const records = await prisma.feeRecord.findMany({
+    const fees = await prisma.fee.findMany({
+      where,
       include: {
-        student: { include: { department: true } },
-        class: true,
+        student: {
+          select: {
+            id: true,
+            name: true,
+            rollNo: true,
+            department: true,
+          },
+        },
       },
-      orderBy: [{ dueDate: "asc" }, { student: { name: "asc" } }],
+      orderBy: { createdAt: "desc" },
     });
-    const allFees = records.map((record) => ({
-      ...record,
-      status: getStatus(record.amountPaidPaise, record.totalAmountPaise),
-    }));
-    const fees = allFees.filter((record) => {
-      const matchesStatus = !requestedStatus || record.status === requestedStatus;
-      const needle = search?.toLocaleLowerCase();
-      const matchesSearch =
-        !needle ||
-        record.student.name.toLocaleLowerCase().includes(needle) ||
-        record.student.registerNo.toLocaleLowerCase().includes(needle) ||
-        record.student.id.toLocaleLowerCase().includes(needle);
-      return matchesStatus && matchesSearch;
-    });
-    const payableFees = allFees.filter((record) => record.status !== "PAID");
 
-    const totalExpectedPaise = records.reduce((sum, record) => sum + record.totalAmountPaise, 0);
-    const totalCollectedPaise = records.reduce((sum, record) => sum + record.amountPaidPaise, 0);
-    const dashboard = {
-      totalExpectedPaise,
-      totalCollectedPaise,
-      totalPendingPaise: totalExpectedPaise - totalCollectedPaise,
-      fullyPaidStudents: records.filter((record) => getStatus(record.amountPaidPaise, record.totalAmountPaise) === "PAID").length,
-      partiallyPaidStudents: records.filter((record) => getStatus(record.amountPaidPaise, record.totalAmountPaise) === "PARTIALLY_PAID").length,
-      pendingStudents: records.filter((record) => getStatus(record.amountPaidPaise, record.totalAmountPaise) === "PENDING").length,
-    };
-
-    return Response.json({ fees, payableFees, feeStudentIds: records.map((record) => record.studentId), dashboard });
+    return NextResponse.json(fees);
   } catch (error) {
-    console.error("Failed to load fee records:", error);
-    return Response.json({ error: "Could not load fee records." }, { status: 500 });
+    console.error("Failed to fetch fees:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch fees." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    const body = await request.json();
+    const { studentId, description, totalAmount, paidAmount, dueDate } = body;
+
+    if (
+      !Number.isInteger(studentId) ||
+      studentId < 1 ||
+      typeof description !== "string" ||
+      !description.trim() ||
+      typeof totalAmount !== "number" ||
+      !Number.isFinite(totalAmount) ||
+      totalAmount <= 0 ||
+      (paidAmount !== undefined &&
+        (typeof paidAmount !== "number" ||
+          !Number.isFinite(paidAmount) ||
+          paidAmount < 0 ||
+          paidAmount > totalAmount))
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid fee details." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to read fee record request:", error);
-    return Response.json({ error: "Could not read fee record details." }, { status: 400 });
-  }
 
-  const result = validateFeeRecord(body);
-  if (!result.success) return Response.json({ error: result.message }, { status: 400 });
+    let parsedDueDate: Date | undefined;
 
-  try {
-    const feeRecord = await prisma.feeRecord.create({
-      data: result.data,
-      include: { student: true, class: true },
+    if (dueDate !== undefined && dueDate !== null && dueDate !== "") {
+      if (
+        typeof dueDate !== "string" ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)
+      ) {
+        return NextResponse.json(
+          { message: "Due date must use YYYY-MM-DD format." },
+          { status: 400 }
+        );
+      }
+
+      parsedDueDate = new Date(`${dueDate}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(parsedDueDate.getTime()) ||
+        parsedDueDate.toISOString().slice(0, 10) !== dueDate
+      ) {
+        return NextResponse.json(
+          { message: "Invalid due date." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const paid = paidAmount ?? 0;
+
+    const fee = await prisma.fee.create({
+      data: {
+        studentId,
+        description: description.trim(),
+        totalAmount,
+        paidAmount: paid,
+        status:
+          paid === 0
+            ? "PENDING"
+            : paid === totalAmount
+              ? "PAID"
+              : "PARTIAL",
+        ...(parsedDueDate ? { dueDate: parsedDueDate } : {}),
+      },
     });
-    return Response.json(feeRecord, { status: 201 });
+
+    return NextResponse.json(fee, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2002") {
-        return Response.json({ error: "A fee record already exists for this student." }, { status: 409 });
-      }
-      if (error.code === "P2003") {
-        return Response.json({ error: "Choose an existing student and class." }, { status: 400 });
-      }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2003"
+    ) {
+      return NextResponse.json(
+        { message: "Student not found." },
+        { status: 404 }
+      );
     }
-    console.error("Failed to create fee record:", error);
-    return Response.json({ error: "Could not create fee record." }, { status: 500 });
+
+    console.error("Failed to create fee:", error);
+
+    return NextResponse.json(
+      { message: "Failed to create fee." },
+      { status: 500 }
+    );
   }
 }

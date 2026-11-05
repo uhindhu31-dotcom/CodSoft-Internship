@@ -1,60 +1,85 @@
-import { Prisma } from "@prisma/client-report";
-import { reportPrisma as prisma } from "@/lib/report-prisma";
-import { validateTeacher } from "@/lib/validation";
 
-export async function GET(request: Request) {
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+export async function GET() {
   try {
-    const search = new URL(request.url).searchParams.get("search")?.trim();
     const teachers = await prisma.teacher.findMany({
-      where: search
-        ? {
-            OR: [
-              { name: { contains: search } },
-              { email: { contains: search.toLowerCase() } },
-            ],
-          }
-        : undefined,
-      include: { department: true },
-      orderBy: { name: "asc" },
+      include: {
+        department: true,
+        subjects: true,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
     });
-    return Response.json(teachers);
+
+    return NextResponse.json(teachers);
   } catch (error) {
-    console.error("Failed to load teachers:", error);
-    return Response.json({ error: "Could not load teachers." }, { status: 500 });
+    console.error("Failed to fetch teachers:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch teachers." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    const body = await request.json();
+    const { name, email, employeeId, departmentId } = body;
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof employeeId !== "string" ||
+      !employeeId.trim() ||
+      (departmentId !== undefined &&
+        departmentId !== null &&
+        (!Number.isInteger(departmentId) || departmentId < 1))
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid teacher details." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to read teacher request:", error);
-    return Response.json({ error: "Could not read teacher details." }, { status: 400 });
-  }
 
-  const result = validateTeacher(body);
-  if (!result.success) {
-    return Response.json({ error: result.message }, { status: 400 });
-  }
-
-  try {
     const teacher = await prisma.teacher.create({
-      data: result.data,
-      include: { department: true },
+      data: {
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        employeeId: employeeId.trim(),
+        ...(departmentId != null ? { departmentId } : {}),
+      },
     });
-    return Response.json(teacher, { status: 201 });
+
+    return NextResponse.json(teacher, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return Response.json({ error: "A teacher with that email address already exists." }, { status: 409 });
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      (error.code === "P2002" || error.code === "P2003")
+    ) {
+      return NextResponse.json(
+        {
+          message:
+            error.code === "P2002"
+              ? "Teacher email or employee ID already exists."
+              : "The selected department does not exist.",
+        },
+        { status: error.code === "P2002" ? 409 : 400 }
+      );
     }
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
-      return Response.json({ error: "Choose an existing department." }, { status: 400 });
-    }
+
     console.error("Failed to create teacher:", error);
-    return Response.json({ error: "Could not create teacher." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to create teacher." },
+      { status: 500 }
+    );
   }
 }

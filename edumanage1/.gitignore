@@ -2,7 +2,6 @@
 
 # dependencies
 /node_modules
-/lib/generated/fee-client/
 /.pnp
 .pnp.*
 .yarn/*
@@ -24,8 +23,6 @@
 # misc
 .DS_Store
 *.pem
-*.db
-*.db-journal
 
 # debug
 npm-debug.log*
@@ -35,7 +32,6 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-!.env.example
 
 # vercel
 .vercel
@@ -43,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/app/generated/prisma
+/lib/generated

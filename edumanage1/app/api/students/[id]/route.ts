@@ -1,74 +1,192 @@
-import { Prisma } from "@prisma/client";
+
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { validateStudent } from "@/lib/validation";
 
-type RouteContext = { params: Promise<{ id: string }> };
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
 
-export async function GET(_request: Request, context: RouteContext) {
+async function getStudentId(context: RouteContext) {
+  const { id } = await context.params;
+  const studentId = Number(id);
+
+  if (!Number.isInteger(studentId) || studentId < 1) {
+    return null;
+  }
+
+  return studentId;
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+
+  return undefined;
+}
+
+// GET: Fetch one student
+export async function GET(
+  request: Request,
+  context: RouteContext
+) {
+  const id = await getStudentId(context);
+
+  if (id === null) {
+    return NextResponse.json(
+      { message: "Invalid student ID." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const { id } = await context.params;
     const student = await prisma.student.findUnique({
       where: { id },
-      include: { department: true },
     });
-    if (!student) return Response.json({ error: "Student not found." }, { status: 404 });
-    return Response.json(student);
+
+    if (!student) {
+      return NextResponse.json(
+        { message: "Student not found." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(student);
   } catch (error) {
-    console.error("Failed to load student:", error);
-    return Response.json({ error: "Could not load student." }, { status: 500 });
+    console.error("Failed to fetch student:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch student." },
+      { status: 500 }
+    );
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
+// PUT: Update a student
+export async function PUT(
+  request: Request,
+  context: RouteContext
+) {
+  const id = await getStudentId(context);
+
+  if (id === null) {
+    return NextResponse.json(
+      { message: "Invalid student ID." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const { id } = await context.params;
-    const result = validateStudent(await request.json());
-    if (!result.success) {
-      return Response.json({ error: result.message }, { status: 400 });
+    const body = await request.json();
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return NextResponse.json(
+        { message: "Invalid request body." },
+        { status: 400 }
+      );
+    }
+
+    const { name, email, rollNo, department, year } = body;
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof rollNo !== "string" ||
+      !rollNo.trim() ||
+      typeof department !== "string" ||
+      !department.trim() ||
+      !Number.isInteger(year) ||
+      year < 1 ||
+      year > 6
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid student details." },
+        { status: 400 }
+      );
     }
 
     const student = await prisma.student.update({
       where: { id },
-      data: result.data,
-      include: { department: true },
+      data: {
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        rollNo: rollNo.trim(),
+        department: department.trim(),
+        year,
+      },
     });
-    return Response.json(student);
+
+    return NextResponse.json(student);
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2002") {
-        return Response.json(
-          { error: "That register number or email is already in use." },
-          { status: 409 },
-        );
-      }
-      if (error.code === "P2025") {
-        return Response.json({ error: "Student not found." }, { status: 404 });
-      }
-      if (error.code === "P2003") {
-        return Response.json({ error: "Choose a valid department." }, { status: 400 });
-      }
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Student not found." },
+        { status: 404 }
+      );
     }
+
+    if (code === "P2002") {
+      return NextResponse.json(
+        { message: "Student email or roll number already exists." },
+        { status: 409 }
+      );
+    }
+
     console.error("Failed to update student:", error);
-    return Response.json({ error: "Could not update student." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to update student." },
+      { status: 500 }
+    );
   }
 }
 
-export async function DELETE(_request: Request, context: RouteContext) {
+// DELETE: Delete a student
+export async function DELETE(
+  request: Request,
+  context: RouteContext
+) {
+  const id = await getStudentId(context);
+
+  if (id === null) {
+    return NextResponse.json(
+      { message: "Invalid student ID." },
+      { status: 400 }
+    );
+  }
+
   try {
-    const { id } = await context.params;
-    await prisma.student.delete({ where: { id } });
-    return Response.json({ success: true });
+    await prisma.student.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({
+      message: "Student deleted successfully.",
+    });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
-      return Response.json({ error: "Student not found." }, { status: 404 });
-    }
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
-      return Response.json(
-        { error: "This student has financial or academic records and cannot be deleted without preserving that history." },
-        { status: 409 },
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Student not found." },
+        { status: 404 }
       );
     }
+
     console.error("Failed to delete student:", error);
-    return Response.json({ error: "Could not delete student." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to delete student." },
+      { status: 500 }
+    );
   }
 }

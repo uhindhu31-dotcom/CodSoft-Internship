@@ -1,88 +1,152 @@
-import { Prisma } from "@prisma/client";
+
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentDateKey } from "@/lib/dates";
-import { isDateKey } from "@/lib/validation";
+import { AttendanceStatus } from "@prisma/client";
 
-type AttendanceInput = { studentId: string; status: "PRESENT" | "ABSENT" };
-
-function isAttendanceInput(value: unknown): value is AttendanceInput {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.studentId === "string" &&
-    record.studentId.length > 0 &&
-    (record.status === "PRESENT" || record.status === "ABSENT")
-  );
-}
+const validStatuses = ["PRESENT", "ABSENT", "LATE"];
 
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const date = searchParams.get("date") ?? getCurrentDateKey();
-    if (!isDateKey(date)) {
-      return Response.json({ error: "Choose a valid date." }, { status: 400 });
+    const studentIdParam = searchParams.get("studentId");
+    const dateParam = searchParams.get("date");
+
+    const where: {
+      studentId?: number;
+      date?: { gte: Date; lt: Date };
+    } = {};
+
+    if (studentIdParam !== null) {
+      const studentId = Number(studentIdParam);
+
+      if (!Number.isInteger(studentId) || studentId < 1) {
+        return NextResponse.json(
+          { message: "Invalid student ID." },
+          { status: 400 }
+        );
+      }
+
+      where.studentId = studentId;
     }
 
-    const students = await prisma.student.findMany({
+    if (dateParam !== null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return NextResponse.json(
+          { message: "Date must use YYYY-MM-DD format." },
+          { status: 400 }
+        );
+      }
+
+      const start = new Date(`${dateParam}T00:00:00.000Z`);
+
+      if (
+        Number.isNaN(start.getTime()) ||
+        start.toISOString().slice(0, 10) !== dateParam
+      ) {
+        return NextResponse.json(
+          { message: "Invalid date." },
+          { status: 400 }
+        );
+      }
+
+      const end = new Date(start);
+      end.setUTCDate(end.getUTCDate() + 1);
+
+      where.date = { gte: start, lt: end };
+    }
+
+    const attendance = await prisma.attendance.findMany({
+      where,
       include: {
-        department: true,
-        attendance: { where: { date }, select: { status: true } },
+        student: {
+          select: {
+            id: true,
+            name: true,
+            rollNo: true,
+            department: true,
+          },
+        },
       },
-      orderBy: { name: "asc" },
+      orderBy: { date: "desc" },
     });
-    return Response.json(
-      students.map(({ attendance, ...student }) => ({
-        ...student,
-        status: attendance[0]?.status ?? null,
-      })),
-    );
+
+    return NextResponse.json(attendance);
   } catch (error) {
-    console.error("Failed to load attendance:", error);
-    return Response.json({ error: "Could not load attendance." }, { status: 500 });
+    console.error("Failed to fetch attendance:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch attendance." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const body: unknown = await request.json();
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return Response.json({ error: "Attendance details are required." }, { status: 400 });
-    }
-    const record = body as Record<string, unknown>;
-    const date = typeof record.date === "string" ? record.date : "";
-    const records = record.records;
-    if (!isDateKey(date)) {
-      return Response.json({ error: "Choose a valid date." }, { status: 400 });
-    }
+    const body = await request.json();
+    const { studentId, date, status } = body;
+
     if (
-      !Array.isArray(records) ||
-      records.length === 0 ||
-      !records.every(isAttendanceInput)
+      !Number.isInteger(studentId) ||
+      studentId < 1 ||
+      typeof date !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      typeof status !== "string" ||
+      !validStatuses.includes(status)
     ) {
-      return Response.json(
-        { error: "Add at least one student with a Present or Absent status." },
-        { status: 400 },
+      return NextResponse.json(
+        { message: "Provide a valid student ID, date, and attendance status." },
+        { status: 400 }
       );
     }
-    if (new Set(records.map((item) => item.studentId)).size !== records.length) {
-      return Response.json({ error: "Each student can only be included once." }, { status: 400 });
+
+    const attendanceDate = new Date(`${date}T00:00:00.000Z`);
+
+    if (
+      Number.isNaN(attendanceDate.getTime()) ||
+      attendanceDate.toISOString().slice(0, 10) !== date
+    ) {
+      return NextResponse.json(
+        { message: "Invalid date." },
+        { status: 400 }
+      );
     }
 
-    await prisma.$transaction(
-      records.map((item) =>
-        prisma.attendance.upsert({
-          where: { studentId_date: { studentId: item.studentId, date } },
-          update: { status: item.status },
-          create: { studentId: item.studentId, date, status: item.status },
-        }),
-      ),
-    );
-    return Response.json({ success: true, saved: records.length });
+    const attendance = await prisma.attendance.create({
+      data: {
+        studentId,
+        date: attendanceDate,
+        status: status as AttendanceStatus,
+      },
+    });
+
+    return NextResponse.json(attendance, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2003") {
-      return Response.json({ error: "One or more selected students no longer exist." }, { status: 400 });
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error
+    ) {
+      if (error.code === "P2002") {
+        return NextResponse.json(
+          { message: "Attendance is already recorded for this student on this date." },
+          { status: 409 }
+        );
+      }
+
+      if (error.code === "P2003") {
+        return NextResponse.json(
+          { message: "Student not found." },
+          { status: 404 }
+        );
+      }
     }
-    console.error("Failed to save attendance:", error);
-    return Response.json({ error: "Could not save attendance." }, { status: 500 });
+
+    console.error("Failed to record attendance:", error);
+
+    return NextResponse.json(
+      { message: "Failed to record attendance." },
+      { status: 500 }
+    );
   }
 }

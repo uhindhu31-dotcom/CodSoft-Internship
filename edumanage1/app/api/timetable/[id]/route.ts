@@ -1,98 +1,218 @@
-import { timetablePrisma as prisma } from "@/lib/timetable-prisma";
-import { TimetableRequestError } from "@/lib/timetable-errors";
-import { validateTimetableEntry } from "@/lib/timetable-validation";
 
-const entryInclude = {
-  class: true,
-  subject: { select: { id: true, name: true, code: true } },
-  teacher: { select: { id: true, name: true, email: true } },
-} as const;
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
-type RouteContext = { params: Promise<{ id: string }> };
+type RouteContext = {
+  params: Promise<{ id: string }>;
+};
 
-export async function PUT(request: Request, { params }: RouteContext) {
-  const { id } = await params;
-  let body: unknown;
-  try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
-    }
-    console.error("Failed to read timetable update:", error);
-    return Response.json({ error: "Could not read timetable details." }, { status: 400 });
+function getErrorCode(error: unknown): string | undefined {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
   }
 
-  const validation = validateTimetableEntry(body);
-  if (!validation.success) return Response.json({ error: validation.message }, { status: 400 });
+  return undefined;
+}
 
+const validDays = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+
+function validTime(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
+  );
+}
+
+async function readId(context: RouteContext) {
+  const { id } = await context.params;
+  const timetableId = Number(id);
+
+  return Number.isInteger(timetableId) && timetableId > 0
+    ? timetableId
+    : null;
+}
+
+export async function GET(
+  _request: Request,
+  context: RouteContext
+) {
   try {
-    const entry = await prisma.$transaction(async (transaction) => {
-      const current = await transaction.timetableEntry.findUnique({ where: { id }, select: { id: true } });
-      if (!current) throw new TimetableRequestError("Timetable entry not found.", 404);
+    const id = await readId(context);
 
-      const [classSubject, subjectTeacher] = await Promise.all([
-        transaction.classSubject.findUnique({
-          where: {
-            classId_subjectId: {
-              classId: validation.data.classId,
-              subjectId: validation.data.subjectId,
-            },
-          },
-        }),
-        transaction.subjectTeacher.findUnique({
-          where: {
-            teacherId_subjectId: {
-              teacherId: validation.data.teacherId,
-              subjectId: validation.data.subjectId,
-            },
-          },
-        }),
-      ]);
-      if (!classSubject || !subjectTeacher) {
-        throw new TimetableRequestError("The selected subject must be assigned to the class and teacher.", 400);
-      }
-
-      const conflict = await transaction.timetableEntry.findFirst({
-        where: {
-          id: { not: id },
-          dayOfWeek: validation.data.dayOfWeek,
-          startTime: { lt: validation.data.endTime },
-          endTime: { gt: validation.data.startTime },
-          OR: [{ classId: validation.data.classId }, { teacherId: validation.data.teacherId }],
-        },
-        select: { id: true },
-      });
-      if (conflict) {
-        throw new TimetableRequestError("This time overlaps an existing class or teacher schedule.", 409);
-      }
-
-      return transaction.timetableEntry.update({
-        where: { id },
-        data: validation.data,
-        include: entryInclude,
-      });
-    });
-    return Response.json(entry);
-  } catch (error) {
-    if (error instanceof TimetableRequestError) {
-      return Response.json({ error: error.message }, { status: error.status });
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid timetable ID." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to update timetable entry:", error);
-    return Response.json({ error: "Could not update timetable entry." }, { status: 500 });
+
+    const entry = await prisma.timetable.findUnique({
+      where: { id },
+      include: {
+        department: true,
+        subject: true,
+        teacher: true,
+      },
+    });
+
+    if (!entry) {
+      return NextResponse.json(
+        { message: "Timetable entry not found." },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(entry);
+  } catch (error) {
+    console.error("Failed to fetch timetable entry:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch timetable entry." },
+      { status: 500 }
+    );
   }
 }
 
-export async function DELETE(_request: Request, { params }: RouteContext) {
-  const { id } = await params;
+export async function PUT(
+  request: Request,
+  context: RouteContext
+) {
   try {
-    await prisma.timetableEntry.delete({ where: { id } });
-    return new Response(null, { status: 204 });
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "P2025") {
-      return Response.json({ error: "Timetable entry not found." }, { status: 404 });
+    const id = await readId(context);
+
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid timetable ID." },
+        { status: 400 }
+      );
     }
+
+    const body = await request.json();
+    const {
+      departmentId,
+      subjectId,
+      teacherId,
+      year,
+      dayOfWeek,
+      startTime,
+      endTime,
+    } = body;
+
+    const matchingDay =
+      typeof dayOfWeek === "string"
+        ? validDays.find(
+            (day) => day.toLowerCase() === dayOfWeek.toLowerCase()
+          )
+        : undefined;
+
+    if (
+      !Number.isInteger(departmentId) ||
+      departmentId < 1 ||
+      !Number.isInteger(subjectId) ||
+      subjectId < 1 ||
+      (teacherId !== undefined &&
+        teacherId !== null &&
+        (!Number.isInteger(teacherId) || teacherId < 1)) ||
+      !Number.isInteger(year) ||
+      year < 1 ||
+      year > 6 ||
+      !matchingDay ||
+      !validTime(startTime) ||
+      !validTime(endTime) ||
+      startTime >= endTime
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid timetable details and times." },
+        { status: 400 }
+      );
+    }
+
+    const entry = await prisma.timetable.update({
+      where: { id },
+      data: {
+        departmentId,
+        subjectId,
+        teacherId: teacherId ?? null,
+        year,
+        dayOfWeek: matchingDay,
+        startTime,
+        endTime,
+      },
+    });
+
+    return NextResponse.json(entry);
+  } catch (error) {
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Timetable entry, department, subject, or teacher not found." },
+        { status: 404 }
+      );
+    }
+
+    if (code === "P2003") {
+      return NextResponse.json(
+        { message: "The selected department, subject, or teacher does not exist." },
+        { status: 400 }
+      );
+    }
+
+    console.error("Failed to update timetable entry:", error);
+
+    return NextResponse.json(
+      { message: "Failed to update timetable entry." },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  context: RouteContext
+) {
+  try {
+    const id = await readId(context);
+
+    if (id === null) {
+      return NextResponse.json(
+        { message: "Invalid timetable ID." },
+        { status: 400 }
+      );
+    }
+
+    await prisma.timetable.delete({ where: { id } });
+
+    return NextResponse.json({
+      message: "Timetable entry deleted successfully.",
+    });
+  } catch (error) {
+    const code = getErrorCode(error);
+
+    if (code === "P2025") {
+      return NextResponse.json(
+        { message: "Timetable entry not found." },
+        { status: 404 }
+      );
+    }
+
     console.error("Failed to delete timetable entry:", error);
-    return Response.json({ error: "Could not delete timetable entry." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to delete timetable entry." },
+      { status: 500 }
+    );
   }
 }

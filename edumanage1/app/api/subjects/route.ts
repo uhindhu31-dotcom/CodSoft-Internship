@@ -1,81 +1,88 @@
-import { Prisma } from "@prisma/client-report";
-import { reportPrisma as prisma } from "@/lib/report-prisma";
-import { validateSubject } from "@/lib/validation";
 
-const subjectRelations = {
-  classes: { include: { class: true } },
-  teachers: { include: { teacher: true } },
-} satisfies Prisma.SubjectInclude;
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 
-async function validateAssociations(classIds: string[], teacherIds: string[]) {
-  const [classes, teachers] = await Promise.all([
-    classIds.length ? prisma.class.count({ where: { id: { in: classIds } } }) : 0,
-    teacherIds.length ? prisma.teacher.count({ where: { id: { in: teacherIds } } }) : 0,
-  ]);
-  if (classes !== classIds.length) return "One or more selected classes no longer exist.";
-  if (teachers !== teacherIds.length) return "One or more selected teachers no longer exist.";
-  return null;
-}
-
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const search = new URL(request.url).searchParams.get("search")?.trim();
     const subjects = await prisma.subject.findMany({
-      where: search
-        ? { OR: [{ name: { contains: search } }, { code: { contains: search.toUpperCase() } }] }
-        : undefined,
-      include: subjectRelations,
-      orderBy: { name: "asc" },
+      include: {
+        department: true,
+        teacher: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
     });
-    return Response.json(subjects);
+
+    return NextResponse.json(subjects);
   } catch (error) {
-    console.error("Failed to load subjects:", error);
-    return Response.json({ error: "Could not load subjects." }, { status: 500 });
+    console.error("Failed to fetch subjects:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch subjects." },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      return Response.json({ error: "Request body must be valid JSON." }, { status: 400 });
+    const body = await request.json();
+    const { name, code, departmentId, teacherId } = body;
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof code !== "string" ||
+      !code.trim() ||
+      !Number.isInteger(departmentId) ||
+      departmentId < 1 ||
+      (teacherId !== undefined &&
+        teacherId !== null &&
+        (!Number.isInteger(teacherId) || teacherId < 1))
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid subject details." },
+        { status: 400 }
+      );
     }
-    console.error("Failed to read subject request:", error);
-    return Response.json({ error: "Could not read subject details." }, { status: 400 });
-  }
 
-  const result = validateSubject(body);
-  if (!result.success) return Response.json({ error: result.message }, { status: 400 });
-
-  try {
-    const associationError = await validateAssociations(result.data.classIds, result.data.teacherIds);
-    if (associationError) return Response.json({ error: associationError }, { status: 400 });
-    const { classIds, teacherIds, ...data } = result.data;
     const subject = await prisma.subject.create({
       data: {
-        ...data,
-        classes: {
-          create: classIds.map((classId) => ({ class: { connect: { id: classId } } })),
-        },
-        teachers: {
-          create: teacherIds.map((teacherId) => ({ teacher: { connect: { id: teacherId } } })),
-        },
+        name: name.trim(),
+        code: code.trim().toUpperCase(),
+        departmentId,
+        ...(teacherId != null ? { teacherId } : {}),
       },
-      include: subjectRelations,
     });
-    return Response.json(subject, { status: 201 });
+
+    return NextResponse.json(subject, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error
+    ) {
       if (error.code === "P2002") {
-        return Response.json({ error: "A subject with that code already exists." }, { status: 409 });
+        return NextResponse.json(
+          { message: "Subject code already exists." },
+          { status: 409 }
+        );
       }
-      if (error.code === "P2003" || error.code === "P2025") {
-        return Response.json({ error: "One or more selected classes or teachers no longer exist." }, { status: 400 });
+
+      if (error.code === "P2003") {
+        return NextResponse.json(
+          { message: "The selected department or teacher does not exist." },
+          { status: 400 }
+        );
       }
     }
+
     console.error("Failed to create subject:", error);
-    return Response.json({ error: "Could not create subject." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to create subject." },
+      { status: 500 }
+    );
   }
 }

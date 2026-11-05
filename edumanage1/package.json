@@ -1,55 +1,33 @@
 {
-  "name": "edumanage1",
+  "name": "edumanage",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:create-admin": "node scripts/create-admin.mjs",
-    "db:seed": "prisma db seed",
-    "db:seed-fees": "node prisma/seed-fees.mjs",
-    "db:seed-performance": "node prisma/seed-performance.mjs",
-    "db:seed-sample-catalog": "node prisma/seed-sample-catalog.mjs",
-    "db:seed-timetable": "node prisma/seed-timetable.mjs",
-    "db:seed-student-qr": "node prisma/seed-student-qr.mjs",
-    "db:seed-announcements": "node prisma/seed-announcements.mjs",
-    "postinstall": "prisma generate"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.mjs"
-  },
-  "overrides": {
-    "exceljs": {
-      "uuid": "^11.1.1"
-    }
+    "lint": "eslint"
   },
   "dependencies": {
-    "@prisma/client": "^6.12.0",
-    "@types/qrcode": "^1.5.6",
-    "bcryptjs": "^3.0.3",
-    "exceljs": "^4.4.0",
-    "html5-qrcode": "^2.3.8",
+    "@better-auth/prisma-adapter": "^1.7.14",
+    "@prisma/client": "^6.19.3",
+    "better-auth": "^1.7.14",
     "next": "16.4.3",
-    "next-auth": "^5.0.0-beta.32",
-    "pdfkit": "^0.20.2",
-    "qrcode": "^1.5.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
     "@types/node": "^20",
-    "@types/pdfkit": "^0.17.7",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "dotenv": "^18.0.9",
     "eslint": "^9",
     "eslint-config-next": "16.4.3",
-    "prisma": "^6.12.0",
+    "node-fetch": "^3.3.2",
+    "prisma": "^6.19.3",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

@@ -1,67 +1,78 @@
-import { randomBytes } from "node:crypto";
-import { Prisma } from "@prisma/client-qr";
+
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { qrPrisma } from "@/lib/qr-prisma";
-import { validateStudent } from "@/lib/validation";
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url);
-    const search = searchParams.get("search")?.trim();
-    const departmentId = searchParams.get("departmentId");
-    const academicYear = searchParams.get("academicYear");
-
     const students = await prisma.student.findMany({
-      where: {
-        ...(search
-          ? {
-              OR: [
-                { name: { contains: search } },
-                { registerNo: { contains: search } },
-              ],
-            }
-          : {}),
-        ...(departmentId ? { departmentId } : {}),
-        ...(academicYear ? { academicYear } : {}),
-      },
-      include: { department: true },
-      orderBy: { name: "asc" },
+      orderBy: { createdAt: "desc" },
     });
-    return Response.json(students);
+
+    return NextResponse.json(students);
   } catch (error) {
-    console.error("Failed to load students:", error);
-    return Response.json({ error: "Could not load students." }, { status: 500 });
+    console.error("Failed to fetch students:", error);
+
+    return NextResponse.json(
+      { message: "Failed to fetch students" },
+      { status: 500 }
+    );
   }
 }
 
 export async function POST(request: Request) {
   try {
-    const result = validateStudent(await request.json());
-    if (!result.success) {
-      return Response.json({ error: result.message }, { status: 400 });
+    const body = await request.json();
+
+    const { name, email, rollNo, department, year } = body;
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      typeof email !== "string" ||
+      !email.trim() ||
+      typeof rollNo !== "string" ||
+      !rollNo.trim() ||
+      typeof department !== "string" ||
+      !department.trim() ||
+      !Number.isInteger(year) ||
+      year < 1 ||
+      year > 6
+    ) {
+      return NextResponse.json(
+        { message: "Please provide valid student details." },
+        { status: 400 }
+      );
     }
 
-    const student = await qrPrisma.student.create({
+    const student = await prisma.student.create({
       data: {
-        ...result.data,
-        qrToken: randomBytes(32).toString("base64url"),
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        rollNo: rollNo.trim(),
+        department: department.trim(),
+        year,
       },
-      include: { department: true },
     });
-    return Response.json(student, { status: 201 });
+
+    return NextResponse.json(student, { status: 201 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2002") {
-        return Response.json(
-          { error: "That register number or email is already in use." },
-          { status: 409 },
-        );
-      }
-      if (error.code === "P2003") {
-        return Response.json({ error: "Choose a valid department." }, { status: 400 });
-      }
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { message: "Student email or roll number already exists." },
+        { status: 409 }
+      );
     }
+
     console.error("Failed to create student:", error);
-    return Response.json({ error: "Could not create student." }, { status: 500 });
+
+    return NextResponse.json(
+      { message: "Failed to create student" },
+      { status: 500 }
+    );
   }
 }
